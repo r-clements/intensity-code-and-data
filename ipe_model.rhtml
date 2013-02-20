@@ -1,0 +1,275 @@
+<head>
+<meta charset="utf-8">
+<title>Intensity model building</title>
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="">
+
+    <style type="text/css">
+      body {
+        padding-top: 60px;
+        padding-bottom: 40px;
+        padding-left: 20px;
+	      padding-right: 20px;
+      }
+    </style>
+    <link href="css/gm.css" rel="stylesheet">
+</head>
+
+<body>
+<div class="block-unit">
+<h1>Intensity model building in <code>R</code></h1>
+<p>Intensities are an alternative way of describing the effects of an earthquake, in contrast to earthquake magnitude or ground motions recorded at seismic stations. Intensity describes these effects using 11 categories which range from "wasn't felt" to "total destruction", and is estimated based on an earthquake's effect on people, structures, and surroundings. It is, therefore, a somewhat qualitative or <i>subjective</i> measure, but one might argue that it is more descriptive than ground motion in regards to what we really care about - vulnerability and risk.</p>
+
+<p>Creating a model for intensity can be somewhat problematic. Intensity is a description of earthquake effects over large areas, and these areas are not always well defined (or accessible). Typically, one longitude-latitude coordinate is reported as the location for a particular intensity value. Also, as I said earlier, intensity is a bit subjective, so there will be some bias. Intensity estimates are also costly to produce, but there are now several websites (most notably the <a href="http://earthquake.usgs.gov/earthquakes/dyfi/" target="_blank">USGS Did You Feel It?</a> website) which estimate intensities based on voluntary internet survey responses. Of course, these estimates will be biased as well, but what can you do?</p>
+
+<p>Existing intensity models, called Intensity Prediction Equations (IPEs) in the geoscience community, are typically fit using non-linear least squares with two covariates, and treat intensity as a continuous variable. Distance between earthquake (hypocenter, epicenter, or rupture) and reported intensity is always one of the covariates (features). The second covariate is either earthquake magnitude or epicentral intensity. I will not even begin to talk here about the problems with using epicentral intensity in a model, but let me just say: don't do it - use earthquake magnitude instead. Epicentral intensity is nearly impossible to measure.</p>
+
+<p>So, the models are generally pretty simple. There is one glaring issue, though: intensity is ordinal, not continuous. This means that assumptions are violated when fitting a regression-type model. However, this may be okay if the goal is just to build the best predictive model that we can.</p>
+
+<p>Now, I will show how to build a few intensity models for Italy in <code>R</code>, and I will compare their performance to two of the best IPEs that we have for Italy. These models will be purely data driven. Many of the existing IPEs use some physical form in their models. Mine will not. I will simply be illustrating that we can make several different types of predictive intensity models, all of which can perform very well on test data. </p>
+
+<p>Note that these models should <>not</b> be used for any real world purposes because I will be doing a very minimal amount of model tuning. Just to reiterate: this is just a demonstration. Perhaps someday in the future I will spend more time making a good model, and I will write up a paper on it.</p>
+
+<h3>Before we begin</h3>
+<p>All of the code and the data that I use here are available on <a href="https://github.com/r-clements">github</a>.</p>
+
+<h3>Let's get started</h3>
+<p>First, let's load any packages that we will be using. Remember to install these using <code>install.packages("name of package")</code> before loading them.</p>
+
+<!--begin.rcode message=FALSE
+require(mgcv)
+require(ordinal)
+require(e1071)
+require(ggplot2) #for some very nice plotting
+require(ggmap) #for including maps
+require(RColorBrewer)
+end.rcode-->
+
+<p>Now, let's read in our data and look at what we have. I should point out here that this data comes from the Italian DBMI04 database. I removed only data that was unusable (had missing locations or missing intensities), and data that was either on islands or across the Adriatic Sea from Italy. Also, some intensities were reported as ranges (e.g. 4-5). I rounded these up to the nearest whole number.</p>
+
+<!--begin.rcode echo=FALSE
+setwd("~/work/GFZ/IPE Model")
+end.rcode-->
+
+<!--begin.rcode
+ipe.data <- read.table("Raw data/all_clean_ordinal_data.txt", header = TRUE)
+head(ipe.data)
+end.rcode-->
+
+<p>The columns are:</p>
+<ul>
+<li>lon: longitude of reported intensity</li>
+<li>lat: latitude of reported intensity</li>
+<li>MCS: reported intensity</li>
+<li>eq.id: earthquake id</li>
+<li>Mw: magnitude of earthquake</li>
+<li>LatEp: latitude of earthquake epicenter</li>
+<li>LonEp: longitude of earthquake epicenter</li>
+<li>dist: Haversine distance between epicenter and reported intensity</li>
+</ul>
+
+<p>We should begin with some exploratory analysis. I will just show some quick plots here, but much more can, and should, be done. </p>
+
+<!--begin.rcode fig.height=5, fig.width=6, fig.align="center"
+p <- ggplot(ipe.data, aes(factor(MCS), dist))
+p + geom_boxplot()
+
+p <- ggplot(ipe.data, aes(factor(MCS), Mw))
+p + geom_boxplot()
+
+p <- ggplot(ipe.data, aes(dist, MCS, alpha = .1))
+p + geom_point() + theme(legend.position="none")
+
+brewer.div <- colorRampPalette(brewer.pal(9, "RdBu"), interpolate = "spline")
+cols <- (brewer.div(10))
+
+p <- ggplot(ipe.data, aes(log(dist), Mw, color = MCS)) 
+p + geom_point() + 
+  scale_colour_gradientn(colours = cols, 
+                         breaks = 2:11, 
+                         guide = "legend")
+
+end.rcode-->
+
+<p>Obvious trends emerge, such as increasing intensity with magnitude, and decreasing intensity with distance. This is nothing surprising. If I were interested in making a really good model, I would probably look into the data more, but for now, I am satisfied.</p>
+
+<p>We should also get a sense of where our reported intensities are located. Remember that I removed some observations in the islands and across the sea. </p>
+
+<!--begin.rcode fig.height=7, fig.width=8, fig.align="center"
+locations <- unique(ipe.data[,c("lon", "lat")])
+#ity = get_map(location = "italy", zoom = 5, source = "osm", color = "bw")
+#open street map's server is often unavailable, so I'd suggest saving this map
+#save(ity, file = "ity")
+load("ity")
+locs <- ggmap(ity)
+locs <- locs + 
+  geom_point(data = locations, mapping = aes(x = lon, y = lat))
+locs
+end.rcode-->
+
+<p>I left some observations in that are in the surrounding countries to help alleviate any boundary effects when fitting a spatial model. Speaking of spatial model...</p>
+
+<h3>The models</h3>
+<p>There are many models we can choose from, but I will fit three: </p>
+<ol>
+<li>Ordered regression model (also known as ordered logistic model, proportional odds model, and many other names);</li> 
+<li>Support vector machine;</li> 
+<li>General additive model with a spatial term.</li> 
+</ol>
+<p>What I would like to fit, but won't right now because code is not easily available, would be:</p>
+<ol>
+<li>General additive ordered logistic model with spatial term;</li> 
+<li>Ordered support vector machine.</li>  
+</ol>
+<p>Ahhh someday, when I have more time.</p>
+
+<h3>Cross validation</h3>
+<p>I don't do any cross-validation since I am not doing any model tuning. I simply fit the models to all of the training data and test it on a testing set. However, for those of you out there interested in making a <i>good</i> model that doesn't overfit the data, use cross-validation. If you want to fit a spatial model, do something similar to what I did <a href="http://r-clements.github.com/gm_model.html" target="_blank">here</a>.</p>
+
+<h3>Model fitting</h3>
+
+<p>Let us begin with our ordered logistic model, using the <code>ordinal</code> package. </p>
+
+<!--begin.rcode
+#make MCS a factor, which it is
+ipe.data$MCS <- as.factor(ipe.data$MCS)
+
+#start with ordinal regression with cumulative link 
+formula1 <- MCS ~ Mw + dist
+
+model.ord <- clm(formula1, data = ipe.data, link = "logit", threshold = "flexible")
+summary(model.ord)
+end.rcode-->
+
+<p>The coefficients tell us that as Mw increases, we are more likely to be in one of the higher intensity categories, and as distance increases we are more likely to be in one of the lower categories. Both coefficients are significant. There are primarily two options that we can play with here: the link function and the structure of the thresholds (the cut points for each category).</p>
+
+<p>Now, let's move on to support vector machines (SVMs) using the <code>e1071</code> package. I wish I could say that I am an expert on SVMs, but I am not. I understand how they work, but I do not know all of the details.</p>
+
+<!--begin.rcode fig.height=7, fig.width=8, fig.align="center"
+#support vector machine with defaults 
+formula1 <- MCS ~ Mw + dist
+
+model.svm <- svm(formula1, data = ipe.data, type = "C-classification", kernel = "radial")
+
+#circles are support vectors, triangles are the rest of the data
+#terrain colors are our different classes, rainbow colors are the classes that
+#each point belongs to
+plot(model.svm, ipe.data, Mw~dist, dataSymbol = 2, svSymbol = 1, symbolPalette = rainbow(10),
+     color.palette = terrain.colors)
+end.rcode-->
+
+<p>Ok, there are quite a few options that we can play with here, but I am just using the defaults. I have no doubt that we can improve this model with some fine tuning. Note that this model treats MCS as categorical, but doesn't exploit the order.</p>
+
+<p>Lastly, let's fit our general additive model (GAM) using the very excellent <code>mgcv</code> package. I like this model for the fact that I can easily include a spatial term, which I suspect is necessary (based on some research that I am currently doing with IPEs and spatial autocorrelation). What I do not like about this model is that it treats MCS as continuous, which means we run the risk of impossible MCS predictions.</p> 
+
+<!--begin.rcode
+#gam with smooth terms and spatial term 
+gam.data <- ipe.data
+gam.data$MCSgam <- as.numeric(gam.data$MCS)
+
+formula.gam <- MCSgam ~ te(dist, Mw) + s(dist) + s(Mw) + s(lon, lat, bs="tp", k=10)
+
+model.gam <- gam(formula.gam, data = gam.data)
+
+summary(model.gam)
+end.rcode-->
+
+<p>All smooth terms are significant. Notice that I model the interaction of Mw and distance using a tensor product smooth. We should, of course, look into each individual smooth, especially the spatial smooth, and adjust the model until we get the best predictive performance.</p>
+
+<h3>Predictive Performance</h3>
+
+<p>We have two testing data sets to use to evaluate our models, and we have two Italy IPEs to compare our models to. The two testing data sets are a set of earthquakes from the DBMI11 database, and internet data (similar to the USGS Did You Feel It? data). Both of these sets of data were collected from the <a href="http://www.ingv.it/en/" target="_blank">INGV website</a>.</p>
+
+
+<!--begin.rcode
+#our testing data and IPE predictions
+test.data <- read.table("ipe_test_data1.txt", h=TRUE)
+IPE1 <- test.data$Ipre
+temp.data <- read.table("ipe_test_data2.txt", h=TRUE)
+IPE2 <- temp.data$Ipre
+
+test.data.internet <- read.table("ipe_test_data_internet1.txt", h=TRUE)
+IPE.internet1 <- test.data.internet$Ipre
+temp.data <- read.table("ipe_test_data_internet2.txt", h=TRUE)
+IPE.internet2 <- temp.data$Ipre
+
+rm(temp.data)
+
+pred.ord <- predict(model.ord, newdata=test.data, type="class")[[1]]
+pred.svm <- predict(model.svm, newdata=test.data)
+pred.gam <- round(predict(model.gam, newdata=test.data))
+
+pred.ord.internet <- predict(model.ord, newdata=test.data.internet, type="class")[[1]]
+pred.svm.internet <- predict(model.svm, newdata=test.data.internet)
+pred.gam.internet <- round(predict(model.gam, newdata=test.data.internet))
+end.rcode-->
+
+<p>To compare models we can use MAE. I know that some people might complain about this, but a good score for ordinal data is hard to come by. </p>
+
+<!--begin.rcode
+#use mae, which may not make a lot of sense
+mae.ord <- mean(abs(test.data$MCSgam-as.numeric(pred.ord)))
+mae.svm <- mean(abs(test.data$MCSgam-as.numeric(pred.svm)))
+mae.gam <- mean(abs(test.data$MCSgam-(pred.gam)))
+
+mae.ord.internet <- mean(abs(test.data.internet$MCSgam-as.numeric(pred.ord.internet)))
+mae.svm.internet <- mean(abs(test.data.internet$MCSgam-as.numeric(pred.svm.internet)))
+mae.gam.internet <- mean(abs(test.data.internet$MCSgam-(pred.gam.internet)))
+
+mae.all <- c(mae.ord, mae.svm, mae.gam)
+mae.all.internet <- c(mae.ord.internet, mae.svm.internet, mae.gam.internet)
+
+#compare with our two Italy IPEs
+IPE1.mcs <- round(IPE1)-1
+IPE2.mcs <- round(IPE2)-1
+IPE.internet1.mcs <- round(IPE.internet1)-1
+IPE.internet2.mcs <- round(IPE.internet2)-1
+
+mae.IPE1 <- mean(abs(test.data$MCSgam-IPE1.mcs))
+mae.IPE2 <- mean(abs(test.data$MCSgam-IPE2.mcs))
+mae.IPE.internet1 <- mean(abs(test.data.internet$MCSgam-IPE.internet1.mcs))
+mae.IPE.internet2 <- mean(abs(test.data.internet$MCSgam-IPE.internet2.mcs))
+
+mae.IPE <- c(mae.IPE1, mae.IPE2)
+mae.IPE.internet <- c(mae.IPE.internet1, mae.IPE.internet2)
+
+mae.all
+mae.IPE
+
+mae.all.internet
+mae.IPE.internet
+end.rcode-->
+
+<p>From the MAE we can see that all three models we fit here perform better than the Italy IPEs for the DBMI11 data, with our spatial GAM model outperforming all of the rest. In regards to the internet data, the SVM model does worse than all others, while our Italy IPE #2 does better than all the rest. Here are the rankings:</p>
+
+<p>DBMI11</p>
+<ol>
+<li>GAM</li>
+<li>SVM</li>
+<li>ORD</li>
+<li>IPE2</li>
+<li>IPE1</li>
+</ol>
+
+<p>Internet</p>
+<ol>
+<li>IPE2</li>
+<li>ORD</li>
+<li>GAM</li>
+<li>IPE1</li>
+<li>SVM</li>
+</ol>
+
+<h3>Conclusions</h3>
+
+<p>This was just a short little demonstration of how <code>R</code> can be easily utilized to quickly fit a few pretty good intensity models. We saw that our three models did very well when put up against a couple of very good IPEs. Unfortunately, on the internet data, our three models did not beat out one of the IPEs. In fact, there is quite a big difference between the top two MAE scores.</p>
+
+<p>I think that this should provide a pretty good start for anybody who is interested in fitting intensity models. Personally, I am interested in exploring the ordered logistic with smooth and spatial terms. Also, I think there is something smarter we can do with the internet data. Perhaps we can see how well correlated the internet data is with actual intensity data from the database. If they are not well correlated, it makes sense that a model that is fit to actual intensities will not predict internet intensities very well.</p>
+
+<p>To build a good predictive model, there is so much more we could have done. We could have tried a neural network, a random forest, stochastic gradient boosting, blended models, other ensembles, and the list goes on and on.</p>
+
+<p>Note that I intentionally left out any identifying information about the two Italy IPEs that I used.</p>
+</div>
+</body>
+</html>
